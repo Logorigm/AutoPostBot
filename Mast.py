@@ -5,7 +5,7 @@ from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
-from aiogram.types import Message
+from aiogram.types import Message, InputMediaPhoto
 
 
 # ============================================================
@@ -14,23 +14,25 @@ from aiogram.types import Message
 
 BOT_TOKEN = "8986178743:AAGgIv1lx-4WDXNerX3j9jE8ERx8AFM1Ygc"
 
-# Твой Telegram ID
-ADMIN_ID = 1769899996
+# ID пользователей, которым разрешено добавлять арты
+ADMIN_IDS = {
+    1769899996, # твой Telegram ID
+    8370116310 # Telegram ID второго пользователя
+}
 
-# ID Telegram-канала
-CHANNEL_ID = -1003521280801
+# ID канала
+CHANNEL_ID = -1001234567890
 
-# Подпись под каждой картинкой
-# Текст "Больше артов здесь" будет синей кликабельной ссылкой
+# Подпись к альбому
+# Она будет кликабельной ссылкой
 CAPTION = '<a href="https://t.me/SecretOasisAll">Наши каналы</a>'
-
-# Интервал между группами публикаций
+# Интервал между альбомами
 INTERVAL_HOURS = 3
 
-# Сколько картинок публиковать за один слот
+# Количество картинок в одном альбоме
 POSTS_PER_BATCH = 4
 
-# Файл базы данных
+# База данных
 DATABASE = "bot.db"
 
 
@@ -48,7 +50,11 @@ logging.basicConfig(
 # БАЗА ДАННЫХ
 # ============================================================
 
-db = sqlite3.connect(DATABASE, check_same_thread=False)
+db = sqlite3.connect(
+    DATABASE,
+    check_same_thread=False
+)
+
 cursor = db.cursor()
 
 cursor.execute("""
@@ -76,14 +82,8 @@ def current_time():
 # ============================================================
 
 def add_image(file_id):
-    """
-    Добавляет картинку в конец очереди.
 
-    Первые 4 картинки получают одно время публикации.
-    Следующие 4 — через 3 часа.
-    И т.д.
-    """
-
+    # Последняя незапубликованная картинка
     cursor.execute("""
         SELECT scheduled_at
         FROM queue
@@ -103,8 +103,8 @@ def add_image(file_id):
 
         last_time = result[0]
 
-        # Сколько картинок уже запланировано
-        # на последний слот
+        # Сколько картинок уже находится
+        # в последнем альбоме
         cursor.execute("""
             SELECT COUNT(*)
             FROM queue
@@ -116,51 +116,84 @@ def add_image(file_id):
 
         if count < POSTS_PER_BATCH:
 
-            # В последнем слоте ещё есть место
+            # В последний альбом ещё можно добавить
             scheduled_at = last_time
 
         else:
 
-            # Последний слот заполнен.
-            # Создаём следующий через 3 часа.
+            # Создаём следующий альбом
             scheduled_at = (
                 last_time +
                 INTERVAL_HOURS * 60 * 60
             )
 
     cursor.execute("""
-        INSERT INTO queue (file_id, scheduled_at)
+        INSERT INTO queue (
+            file_id,
+            scheduled_at
+        )
         VALUES (?, ?)
-    """, (file_id, scheduled_at))
+    """, (
+        file_id,
+        scheduled_at
+    ))
 
     db.commit()
 
 
 # ============================================================
-# ПОЛУЧИТЬ КАРТИНКИ ДЛЯ ПУБЛИКАЦИИ
+# ПОЛУЧИТЬ ГОТОВЫЙ АЛЬБОМ
 # ============================================================
 
 def get_images_to_post():
 
     now = current_time()
 
+    # Сначала узнаём время самого старого альбома
+    cursor.execute("""
+        SELECT scheduled_at
+        FROM queue
+        WHERE posted = 0
+        GROUP BY scheduled_at
+        ORDER BY scheduled_at ASC
+        LIMIT 1
+    """)
+
+    result = cursor.fetchone()
+
+    if result is None:
+        return []
+
+    scheduled_at = result[0]
+
+    # Проверяем, наступило ли время публикации
+    if scheduled_at > now:
+        return []
+
+    # Получаем картинки именно этого альбома
     cursor.execute("""
         SELECT id, file_id
         FROM queue
         WHERE posted = 0
-        AND scheduled_at <= ?
+        AND scheduled_at = ?
         ORDER BY id ASC
         LIMIT ?
     """, (
-        now,
+        scheduled_at,
         POSTS_PER_BATCH
     ))
 
-    return cursor.fetchall()
+    images = cursor.fetchall()
+
+    # Публикуем только полный альбом из 4 картинок
+    if len(images) < POSTS_PER_BATCH:
+        return []
+
+    return images
 
 
 # ============================================================
-# ПОМЕТИТЬ КАРТИНКУ КАК ОПУБЛИКОВАННУЮ
+# ПОМЕТИТЬ КАК ОПУБЛИКОВАННЫЕ
 # ============================================================
 
 def mark_as_posted(image_id):
@@ -190,14 +223,6 @@ def get_queue_count():
 
 
 # ============================================================
-# BOT
-# ============================================================
-
-bot = Bot(BOT_TOKEN)
-dp = Dispatcher()
-
-
-# ============================================================
 # ПРОВЕРКА АДМИНА
 # ============================================================
 
@@ -205,8 +230,16 @@ def is_admin(message: Message):
 
     return (
         message.from_user is not None
-        and message.from_user.id == ADMIN_ID
+        and message.from_user.id in ADMIN_IDS
     )
+
+
+# ============================================================
+# BOT
+# ============================================================
+
+bot = Bot(BOT_TOKEN)
+dp = Dispatcher()
 
 
 # ============================================================
@@ -228,7 +261,7 @@ async def start(message: Message):
 
 
 # ============================================================
-# ПОЛУЧЕНИЕ ОДНОЙ КАРТИНКИ
+# ПОЛУЧЕНИЕ КАРТИНКИ
 # ============================================================
 
 @dp.message(F.photo)
@@ -245,7 +278,7 @@ async def receive_photo(message: Message):
     count = get_queue_count()
 
     await message.answer(
-        f"Арти добавлен в очередь.\n"
+        f"Арт добавлен в очередь.\n"
         f"Сейчас в очереди: {count}"
     )
 
@@ -265,36 +298,51 @@ async def publisher():
             if images:
 
                 logging.info(
-                    f"Найдено для публикации: {len(images)}"
+                    f"Готов альбом из {len(images)} картинок"
                 )
 
-                for image_id, file_id in images:
+                media = []
 
-                    try:
+                # Создаём альбом
+                for index, (image_id, file_id) in enumerate(images):
 
-                        await bot.send_photo(
-                            chat_id=CHANNEL_ID,
-                            photo=file_id,
-                            caption=CAPTION,
+                    # Подпись добавляем только к первой картинке
+                    caption = (
+                        CAPTION
+                        if index == 0
+                        else None
+                    )
+
+                    media.append(
+                        InputMediaPhoto(
+                            media=file_id,
+                            caption=caption,
                             parse_mode="HTML"
                         )
+                    )
 
+                try:
+
+                    # Публикуем одним альбомом
+                    await bot.send_media_group(
+                        chat_id=CHANNEL_ID,
+                        media=media
+                    )
+
+                    # Отмечаем все 4 картинки
+                    # как опубликованные
+                    for image_id, _ in images:
                         mark_as_posted(image_id)
 
-                        logging.info(
-                            f"Картинка {image_id} опубликована"
-                        )
+                    logging.info(
+                        "Альбом успешно опубликован"
+                    )
 
-                    except Exception as error:
+                except Exception as error:
 
-                        logging.error(
-                            f"Ошибка публикации "
-                            f"{image_id}: {error}"
-                        )
-
-                        # Не помечаем как опубликованную.
-                        # Попробуем ещё раз при следующем цикле.
-                        break
+                    logging.error(
+                        f"Ошибка публикации альбома: {error}"
+                    )
 
             # Проверяем очередь каждые 30 секунд
             await asyncio.sleep(30)
@@ -321,7 +369,7 @@ async def main():
         publisher()
     )
 
-    # Запускаем Telegram-бота
+    # Запускаем Telegram
     await dp.start_polling(bot)
 
 
@@ -330,5 +378,4 @@ async def main():
 # ============================================================
 
 if __name__ == "__main__":
-
     asyncio.run(main())
