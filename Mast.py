@@ -41,11 +41,11 @@ CAPTION =  '<a href="https://t.me/SecretOasisAll">Наши каналы</a>'
 
 
 # Интервал между автоматическими публикациями
-INTERVAL_HOURS = 3
+INTERVAL_HOURS = 6
 
 
 # Количество картинок в одном альбоме
-POSTS_PER_BATCH = 4
+POSTS_PER_BATCH = 8
 
 
 # Название файла базы данных
