@@ -45,7 +45,7 @@ INTERVAL_HOURS = 6
 
 
 # Количество картинок в одном альбоме
-POSTS_PER_BATCH = 8
+POSTS_PER_BATCH = 4
 
 
 # Название файла базы данных
