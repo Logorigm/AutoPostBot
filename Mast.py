@@ -41,11 +41,11 @@ CAPTION =  '<a href="https://t.me/RashodnikAll">Наши каналы</a>'
 
 
 # Интервал между автоматическими публикациями
-INTERVAL_HOURS = 6
+INTERVAL_HOURS = 3
 
 
 # Количество картинок в одном альбоме
-POSTS_PER_BATCH = 4
+POSTS_PER_BATCH = 2
 
 
 # Название файла базы данных
@@ -82,6 +82,15 @@ CREATE TABLE IF NOT EXISTS queue (
 )
 """)
 
+# Здесь хранится время следующей
+# автоматической публикации
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+)
+""")
+
 db.commit()
 
 
@@ -99,54 +108,9 @@ def current_time():
 
 def add_image(file_id):
 
-    # Ищем последний запланированный альбом
-    cursor.execute("""
-        SELECT scheduled_at
-        FROM queue
-        WHERE posted = 0
-        ORDER BY scheduled_at DESC, id DESC
-        LIMIT 1
-    """)
-
-    result = cursor.fetchone()
-
-
-    # Если очередь пустая
-    if result is None:
-
-        scheduled_at = current_time()
-
-    else:
-
-        last_time = result[0]
-
-        # Сколько картинок уже находится
-        # в последнем альбоме
-        cursor.execute("""
-            SELECT COUNT(*)
-            FROM queue
-            WHERE scheduled_at = ?
-            AND posted = 0
-        """, (last_time,))
-
-        count = cursor.fetchone()[0]
-
-
-        if count < POSTS_PER_BATCH:
-
-            # В последний альбом ещё есть место
-            scheduled_at = last_time
-
-        else:
-
-            # Последний альбом заполнен.
-            # Следующий будет через 3 часа.
-            scheduled_at = (
-                last_time +
-                INTERVAL_HOURS * 60 * 60
-            )
-
-
+    # scheduled_at теперь хранит время добавления арта.
+    # Порядок публикации случайный,
+    # а время — общее расписание (см. ниже).
     cursor.execute("""
         INSERT INTO queue (
             file_id,
@@ -155,68 +119,97 @@ def add_image(file_id):
         VALUES (?, ?)
     """, (
         file_id,
-        scheduled_at
+        current_time()
     ))
 
     db.commit()
 
 
 # ============================================================
-# ПОЛУЧЕНИЕ ПЕРВОГО АЛЬБОМА
+# РАСПИСАНИЕ ПУБЛИКАЦИЙ
 # ============================================================
 
-def get_images_to_post(force=False):
+def set_next_post_time(timestamp):
 
-    now = current_time()
-
-
-    # Ищем самый первый альбом в очереди
     cursor.execute("""
-        SELECT scheduled_at
-        FROM queue
-        WHERE posted = 0
-        GROUP BY scheduled_at
-        ORDER BY scheduled_at ASC
-        LIMIT 1
+        INSERT OR REPLACE INTO settings (
+            key,
+            value
+        )
+        VALUES ('next_post_at', ?)
+    """, (timestamp,))
+
+    db.commit()
+
+
+def get_next_post_time():
+
+    cursor.execute("""
+        SELECT value
+        FROM settings
+        WHERE key = 'next_post_at'
     """)
 
     result = cursor.fetchone()
 
 
-    # Очередь пустая
-    if result is None:
-        return []
+    if result is not None:
+        return result[0]
 
 
-    scheduled_at = result[0]
+    # Первый запуск после обновления.
+    # Берём время ближайшего альбома из старой очереди,
+    # чтобы не сбить уже запланированную публикацию.
+    cursor.execute("""
+        SELECT MIN(scheduled_at)
+        FROM queue
+        WHERE posted = 0
+    """)
 
+    next_post_at = cursor.fetchone()[0] or current_time()
+
+    set_next_post_time(next_post_at)
+
+    return next_post_at
+
+
+# Следующая публикация — через INTERVAL_HOURS
+def schedule_next_post():
+
+    set_next_post_time(
+        current_time() +
+        INTERVAL_HOURS * 60 * 60
+    )
+
+
+# ============================================================
+# ПОЛУЧЕНИЕ СЛУЧАЙНОГО АЛЬБОМА
+# ============================================================
+
+def get_images_to_post(force=False):
 
     # При обычной публикации проверяем время.
     #
     # При /next force=True,
     # поэтому время игнорируется.
-    if not force and scheduled_at > now:
+    if not force and get_next_post_time() > current_time():
         return []
 
 
-    # Получаем картинки первого альбома
+    # Выбираем случайные арты из всей очереди
     cursor.execute("""
         SELECT id, file_id
         FROM queue
         WHERE posted = 0
-        AND scheduled_at = ?
-        ORDER BY id ASC
+        ORDER BY RANDOM()
         LIMIT ?
-    """, (
-        scheduled_at,
-        POSTS_PER_BATCH
-    ))
+    """, (POSTS_PER_BATCH,))
 
     images = cursor.fetchall()
 
 
     # Публикуем только полный альбом
-    # из 4 картинок
+    # из POSTS_PER_BATCH картинок
     if len(images) < POSTS_PER_BATCH:
         return []
 
@@ -319,7 +312,7 @@ async def start(message: Message):
     await message.answer(
         f"Бот работает.\n\n"
         f"Артов в очереди: {count}\n\n"
-        f"/next — опубликовать следующие 4 арта сейчас"
+        f"/next — опубликовать {POSTS_PER_BATCH} случайных арта сейчас"
     )
 
 
@@ -352,7 +345,7 @@ async def next_album(message: Message):
         else:
 
             await message.answer(
-                "Пока нет полного альбома из 4 артов."
+                f"Пока нет полного альбома из {POSTS_PER_BATCH} артов."
             )
 
         return
@@ -364,7 +357,7 @@ async def next_album(message: Message):
 
     try:
 
-        # Отправляем 4 картинки одним альбомом
+        # Отправляем картинки одним альбомом
         await bot.send_media_group(
             chat_id=CHANNEL_ID,
             media=media
@@ -377,8 +370,12 @@ async def next_album(message: Message):
             mark_as_posted(image_id)
 
 
+        # Следующий автопост — через INTERVAL_HOURS
+        schedule_next_post()
+
+
         await message.answer(
-            "Следующие 4 арта опубликованы."
+            f"Следующие {POSTS_PER_BATCH} арта опубликованы."
         )
 
 
@@ -474,6 +471,11 @@ async def publisher():
                         mark_as_posted(
                             image_id
                         )
+
+
+                    # Следующий автопост —
+                    # через INTERVAL_HOURS
+                    schedule_next_post()
 
 
                     logging.info(
