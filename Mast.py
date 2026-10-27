@@ -41,11 +41,11 @@ CAPTION =  '<a href="https://t.me/RashodnikAll">Наши каналы</a>'
 
 
 # Интервал между автоматическими публикациями
-INTERVAL_HOURS = 3
+INTERVAL_HOURS = 2
 
 
-# Количество картинок в одном альбоме
-POSTS_PER_BATCH = 2
+# Количество картинок в одном посте
+POSTS_PER_BATCH = 1
 
 
 # Название файла базы данных
@@ -296,6 +296,33 @@ dp = Dispatcher()
 
 
 # ============================================================
+# ОТПРАВКА ПОСТА В КАНАЛ
+# ============================================================
+
+async def send_images(images):
+
+    # Telegram не принимает альбом из одной картинки,
+    # поэтому один арт отправляем обычным фото
+    if len(images) == 1:
+
+        await bot.send_photo(
+            chat_id=CHANNEL_ID,
+            photo=images[0][1],
+            caption=CAPTION,
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    # Несколько картинок — одним альбомом
+    await bot.send_media_group(
+        chat_id=CHANNEL_ID,
+        media=create_media_group(images)
+    )
+
+
+# ============================================================
 # /start
 # ============================================================
 
@@ -312,7 +339,8 @@ async def start(message: Message):
     await message.answer(
         f"Бот работает.\n\n"
         f"Артов в очереди: {count}\n\n"
-        f"/next — опубликовать {POSTS_PER_BATCH} случайных арта сейчас"
+        f"/next — опубликовать случайный пост сейчас\n"
+        f"(артов в посте: {POSTS_PER_BATCH})"
     )
 
 
@@ -345,23 +373,17 @@ async def next_album(message: Message):
         else:
 
             await message.answer(
-                f"Пока нет полного альбома из {POSTS_PER_BATCH} артов."
+                f"Пока мало артов для поста "
+                f"(нужно: {POSTS_PER_BATCH})."
             )
 
         return
 
 
-    # Создаём альбом
-    media = create_media_group(images)
-
-
     try:
 
-        # Отправляем картинки одним альбомом
-        await bot.send_media_group(
-            chat_id=CHANNEL_ID,
-            media=media
-        )
+        # Отправляем пост в канал
+        await send_images(images)
 
 
         # Отмечаем все картинки как опубликованные
@@ -375,12 +397,12 @@ async def next_album(message: Message):
 
 
         await message.answer(
-            f"Следующие {POSTS_PER_BATCH} арта опубликованы."
+            f"Опубликовано артов: {len(images)}"
         )
 
 
         logging.info(
-            "Альбом опубликован вручную через /next"
+            "Пост опубликован вручную через /next"
         )
 
 
@@ -392,7 +414,7 @@ async def next_album(message: Message):
 
 
         await message.answer(
-            "Ошибка при публикации альбома."
+            "Ошибка при публикации поста."
         )
 
 
@@ -445,23 +467,14 @@ async def publisher():
             if images:
 
                 logging.info(
-                    f"Готов альбом из {len(images)} картинок"
-                )
-
-
-                # Создаём альбом
-                media = create_media_group(
-                    images
+                    f"Готов пост из {len(images)} картинок"
                 )
 
 
                 try:
 
-                    # Публикуем альбом
-                    await bot.send_media_group(
-                        chat_id=CHANNEL_ID,
-                        media=media
-                    )
+                    # Публикуем пост
+                    await send_images(images)
 
 
                     # Отмечаем картинки
@@ -479,7 +492,7 @@ async def publisher():
 
 
                     logging.info(
-                        "Альбом автоматически опубликован"
+                        "Пост автоматически опубликован"
                     )
 
 
